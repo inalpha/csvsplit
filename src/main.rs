@@ -1,9 +1,5 @@
 extern crate config;
 extern crate csv;
-extern crate serde;
-
-#[macro_use]
-extern crate serde_derive;
 
 use config::{Config, ConfigError, File};
 use std::collections::HashMap;
@@ -26,6 +22,23 @@ fn main() -> Result<(), Box<Error>> {
         process::exit(1);
     });
 
+    let key: usize = match env::args().nth(3) {
+        Some(n) => {
+            match n.parse() {
+                Ok(n) => n,
+                Err(_) => {
+                    println!("could not parse column index");
+                    process::exit(1);
+                },
+            }
+        },
+
+        None => {
+            println!("missing column index");
+            process::exit(1);
+        }
+    };
+
     let matches = get_matches(&configname).unwrap_or_else(|e| {
         println!("[settings] {}", e);
         process::exit(1);
@@ -37,55 +50,41 @@ fn main() -> Result<(), Box<Error>> {
     });
 
     let mut rdr = csv::ReaderBuilder::new().from_reader(file);
+
     let headers = rdr.byte_headers()?.clone();
     let mut writers: HashMap<String, BoxedWriter> = HashMap::new();
     let mut row = csv::ByteRecord::new();
-    while rdr.read_byte_record(&mut row)? { 
-        let val = str::from_utf8(row.get(14).unwrap()).unwrap();
-        for (path, m) in matches.clone() {
-            if (m.iter().any(|x| x == val)) {
-                println!("-> {}", path);
-                let mut wrt = match writers.entry(path.clone()) {
-                    Entry::Occupied(w) => w.into_mut(),
-                    Entry::Vacant(v) => {
-                        let file: Box<io::Write+'static> = Box::new(fs::File::create(path.clone()).unwrap());
-                        let mut w = csv::Writer::from_writer(file);
-                        v.insert(w)
-                    }
-                };
-                wrt.write_byte_record(&row);
-            } else {
-                println!("-> others.csv");
-            }
-        }
-    }
 
+    while rdr.read_byte_record(&mut row)? { 
+        let val = str::from_utf8(row.get(key).unwrap()).unwrap();
+        let path = get_path(val, &matches);
+        let wrt = match writers.entry(path.clone()) {
+                Entry::Occupied(w) => w.into_mut(),
+                Entry::Vacant(v) => {
+                    let file = fs::File::create(path).unwrap_or_else(|e| {
+                        println!("could not create output file {}", e);
+                        process::exit(1);
+                    });
+                    let file: Box<io::Write+'static> = Box::new(file);
+                    let mut w = csv::Writer::from_writer(file);
+                    w.write_byte_record(&headers)?;
+                    v.insert(w)
+                }
+            };
+        wrt.write_byte_record(&row)?;
+    }
     Ok(())
 }
 
-pub fn get_matches(path: &str) -> Result<HashMap<String, Vec<String>>, ConfigError> {
+fn get_matches(path: &str) -> Result<HashMap<String, Vec<String>>, ConfigError> {
     let mut s = Config::new();
     s.merge(File::with_name(path))?;
     s.get::<HashMap<String, Vec<String>>>("matches")
 }
 
-pub struct Output {
-    w: csv::Writer<std::fs::File>,
-}
-
-impl Output {
-    pub fn new(path: &str, header: &csv::ByteRecord) -> Self {
-        let mut w = csv::Writer::from_writer(fs::File::create(path).unwrap());
-        w.write_byte_record(header).unwrap();
-        w.flush().unwrap();
-        Output { w: w }
-    }
-
-    pub fn write(&mut self, row: &csv::ByteRecord) {
-        self.w.write_byte_record(row).unwrap();
-    }
-
-    pub fn flush(&mut self) {
-        self.w.flush().unwrap();
-    }
+fn get_path(val: &str, matches: &HashMap<String, Vec<String>>) -> String {
+    for (path, m) in matches {
+        if m.iter().any(|x| x == val) { return path.clone(); }
+    };
+    String::from("others.csv")
 }
